@@ -2,6 +2,18 @@ const express = require('express');
 const router = express.Router();
 const db = require('./db');
 
+// Функция экранирования HTML-символов для защиты от XSS
+function escapeHtml(text) {
+  if (typeof text !== 'string') return text;
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+
 // GET /products - Получить все товары
 router.get('/products', (req, res) => {
   const sql = 'SELECT * FROM products ORDER BY created_at DESC';
@@ -10,9 +22,17 @@ router.get('/products', (req, res) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
+    
+    // Экранирование данных для защиты от XSS
+    const safeRows = rows.map(row => ({
+      ...row,
+      name: escapeHtml(String(row.name || '')),
+      description: escapeHtml(String(row.description || ''))
+    }));
+    
     res.json({
       message: 'success',
-      data: rows
+      data: safeRows
     });
   });
 });
@@ -29,9 +49,17 @@ router.get('/products/:id', (req, res) => {
     if (!row) {
       return res.status(404).json({ message: 'Товар не найден' });
     }
+    
+    // Экранирование данных для защиты от XSS
+    const safeRow = {
+      ...row,
+      name: escapeHtml(String(row.name || '')),
+      description: escapeHtml(String(row.description || ''))
+    };
+    
     res.json({
       message: 'success',
-      data: row
+      data: safeRow
     });
   });
 });
@@ -40,28 +68,39 @@ router.get('/products/:id', (req, res) => {
 router.post('/products', (req, res) => {
   const { name, description, price, quantity } = req.body;
   
-  // Валидация обязательных полей
-  if (!name || !price) {
-    return res.status(400).json({ 
-      error: 'Имя и цена обязательны для заполнения' 
-    });
+  // Валидация типов и форматов данных
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ error: 'Имя должно быть непустой строкой' });
   }
+
+  if (typeof price !== 'number' || price <= 0) {
+    return res.status(400).json({ error: 'Цена должна быть положительным числом' });
+  }
+
+  if (quantity !== undefined && (typeof quantity !== 'number' || quantity < 0)) {
+    return res.status(400).json({ error: 'Количество должно быть неотрицательным числом' });
+  }
+
+  // Экранирование name и description
+  const safeName = escapeHtml(name.trim());
+  const safeDescription = description ? escapeHtml(String(description).substring(0, 1000)) : '';
   
   const sql = `INSERT INTO products (name, description, price, quantity) 
                VALUES (?, ?, ?, ?)`;
   
-  db.run(sql, [name, description || '', price, quantity || 0], function(err) {
+  db.run(sql, [safeName, safeDescription, price, quantity || 0], function(err) {
     if (err) {
-      return res.status(500).json({ error: err.message });
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Ошибка сервера' });
     }
     res.status(201).json({
       message: 'Товар успешно создан',
       data: {
         id: this.lastID,
-        name,
-        description,
+        name: safeName,
+        description: safeDescription,
         price,
-        quantity
+        quantity: quantity || 0
       }
     });
   });
@@ -81,6 +120,10 @@ router.put('/products/:id', (req, res) => {
       return res.status(404).json({ message: 'Товар не найден' });
     }
     
+    // Экранирование новых значений
+    const safeName = name ? escapeHtml(String(name).trim()) : null;
+    const safeDescription = description ? escapeHtml(String(description).substring(0, 1000)) : null;
+    
     // Обновляем товар
     const sql = `UPDATE products SET 
                  name = COALESCE(?, name),
@@ -89,19 +132,23 @@ router.put('/products/:id', (req, res) => {
                  quantity = COALESCE(?, quantity)
                  WHERE id = ?`;
     
-    db.run(sql, [name, description, price, quantity, id], function(err) {
+    db.run(sql, [safeName, safeDescription, price, quantity, id], function(err) {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
+      
+      // Формируем безопасный ответ
+      const responseData = {
+        id,
+        name: safeName || row.name,
+        description: safeDescription || row.description,
+        price: price || row.price,
+        quantity: quantity || row.quantity
+      };
+      
       res.json({
         message: 'Товар успешно обновлен',
-        data: {
-          id,
-          name: name || row.name,
-          description: description || row.description,
-          price: price || row.price,
-          quantity: quantity || row.quantity
-        }
+        data: responseData
       });
     });
   });
